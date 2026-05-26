@@ -61,7 +61,7 @@ def generate_e_base():
         axis=1,
     )
 
-    hub_lookup = hub_master[["code", "name"]].copy()
+    hub_lookup = hub_master[["code", "name", "region", "state"]].copy()
     hub_lookup["code"] = hub_lookup["code"].astype(str).str.strip()
 
     e["Billing Hub Code"] = e["Billing Hub Code"].astype(str).str.strip()
@@ -73,7 +73,12 @@ def generate_e_base():
         how="left",
     )
 
-    e.rename(columns={"name": "Billing Hub Name"}, inplace=True)
+    e.rename(columns={
+        "name": "Billing Hub Name",
+        "region": "Hub Region",
+        "state": "Hub State",
+    }, inplace=True)
+
     e.drop(columns=["code"], inplace=True, errors="ignore")
 
     e["Origin Pincode"] = s(df, "Sender Pincode")
@@ -150,9 +155,10 @@ def generate_e_base():
     if "Partner Name" not in e.columns:
         e["Partner Name"] = ""
 
-    e["Hub Billing type"] = ""
-    e["Hub Region"] = ""
-    e["Hub State"] = ""
+    e["Hub Billing type"] = e["HUB Classification"].apply(
+        lambda x: "HIH" if str(x).strip().upper() == "HIH" else "E2E"
+    )
+    
 
     weights = pd.DataFrame({
         "Input Weight": pd.to_numeric(e["Input Weight"], errors="coerce"),
