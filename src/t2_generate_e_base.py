@@ -7,6 +7,7 @@ D_DIR = Path("input/t2/d_cleaned")
 F_DIR = Path("input/t2/f")
 G_DIR = Path("input/t2/g")
 OUTPUT_DIR = Path("output/t2")
+HUB_MASTER_DIR = Path("input/t2/hub_master")
 
 
 def get_excel_file(folder: Path) -> Path:
@@ -37,6 +38,7 @@ def generate_e_base():
     d = read_excel_file(get_excel_file(D_DIR))
     f = read_excel_file(get_excel_file(F_DIR))
     g = read_excel_file(get_excel_file(G_DIR))
+    hub_master = read_excel_file(get_excel_file(HUB_MASTER_DIR))
 
     c["Activity Type"] = "Delivery"
     d["Activity Type"] = "Pickup"
@@ -59,7 +61,20 @@ def generate_e_base():
         axis=1,
     )
 
-    e["Billing Hub Name"] = e["Billing Hub Code"]
+    hub_lookup = hub_master[["code", "name"]].copy()
+    hub_lookup["code"] = hub_lookup["code"].astype(str).str.strip()
+
+    e["Billing Hub Code"] = e["Billing Hub Code"].astype(str).str.strip()
+
+    e = e.merge(
+        hub_lookup,
+        left_on="Billing Hub Code",
+        right_on="code",
+        how="left",
+    )
+
+    e.rename(columns={"name": "Billing Hub Name"}, inplace=True)
+    e.drop(columns=["code"], inplace=True, errors="ignore")
 
     e["Origin Pincode"] = s(df, "Sender Pincode")
     e["Destination Pincode"] = s(df, "Destination Pincode")
@@ -167,7 +182,7 @@ def generate_e_base():
     e["Customer Reference No."] = s(df, "Customer Reference Number")
 
     prefixes = ("FY", "16", "17", "RD", "BB", "SS")
-    
+
     customer_ref = e["Customer Reference No."].fillna("").astype(str).str.strip()
 
     e["Business Type"] = customer_ref.apply(
