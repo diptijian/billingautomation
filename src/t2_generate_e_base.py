@@ -6,6 +6,7 @@ C_DIR = Path("input/t2/c_cleaned")
 D_DIR = Path("input/t2/d_cleaned")
 F_DIR = Path("input/t2/f")
 G_DIR = Path("input/t2/g")
+H_DIR = Path("input/t2/h")
 OUTPUT_DIR = Path("output/t2")
 HUB_MASTER_DIR = Path("input/t2/hub_master")
 
@@ -38,6 +39,7 @@ def generate_e_base():
     d = read_excel_file(get_excel_file(D_DIR))
     f = read_excel_file(get_excel_file(F_DIR))
     g = read_excel_file(get_excel_file(G_DIR))
+    h = read_excel_file(get_excel_file(H_DIR))
     hub_master = read_excel_file(get_excel_file(HUB_MASTER_DIR))
 
     c["Activity Type"] = "Delivery"
@@ -61,7 +63,7 @@ def generate_e_base():
         axis=1,
     )
 
-    hub_lookup = hub_master[["code", "name", "region", "state"]].copy()
+    hub_lookup = hub_master[["code", "name", "region", "state", "Serving DC Name"]].copy()
     hub_lookup["code"] = hub_lookup["code"].astype(str).str.strip()
 
     e["Billing Hub Code"] = e["Billing Hub Code"].astype(str).str.strip()
@@ -77,6 +79,7 @@ def generate_e_base():
         "name": "Billing Hub Name",
         "region": "Hub Region",
         "state": "Hub State",
+        "Serving DC Name": "Serving DC Name"
     }, inplace=True)
 
     e.drop(columns=["code"], inplace=True, errors="ignore")
@@ -176,14 +179,78 @@ def generate_e_base():
         + e["Partner Name"].fillna("").astype(str)
     )
 
-    e["Min. Freight (Upto 4 KGs)"] = ""
-    e["Freight / KG (Above 4 KGs)"] = ""
-    e["Additional Freight Rs. 1 / KG on Pickup (RVP only)"] = ""
-    e["Floor Handling Amount"] = ""
+    h_lookup = h.copy()
+
+    h_lookup["concnate"] = (
+        h_lookup["concnate"].fillna("").astype(str).str.strip()
+    )
+
+    e["concnate"] = e["concnate"].fillna("").astype(str).str.strip()
+
+    e = e.merge(
+        h_lookup[
+            [
+                "concnate",
+                "Rate upto 4kgs_RFQ",
+                ">4 kgs - Per kg rate_RFQ",
+            ]
+        ],
+        on="concnate",
+        how="left",
+    )
+
+    e["Min. Freight (Upto 4 KGs)"] = e.apply(
+        lambda r: r["Rate upto 4kgs_RFQ"]
+        if r["Hub Billing type"] == "HIH"
+        else "",
+        axis=1,
+    )
+
+    e["Freight / KG (Above 4 KGs)"] = e.apply(
+        lambda r: r[">4 kgs - Per kg rate_RFQ"]
+        if r["Hub Billing type"] == "HIH"
+        else "",
+        axis=1,
+    )
+
+    e.drop(
+        columns=[
+            "Rate upto 4kgs_RFQ",
+            ">4 kgs - Per kg rate_RFQ",
+        ],
+        inplace=True,
+        errors="ignore",
+    )
+    e["Additional Freight Rs. 1 / KG on Pickup (RVP only)"] = e.apply(
+        lambda r: (
+            max(r["Chargeable Weight (Payable)"] - 4, 0)
+            if r["Status(In Trip)"] == "Pickup" and r["Movement Type"] == "RVP" and r["Hub Billing type"] == "HIH"
+            else (
+                r["Chargeable Weight (Payable)"]
+                if r["Status(In Trip)"] == "Pickup" and r["Movement Type"] == "RVP" and r["Hub Billing type"] == "E2E"
+                else ""
+            )
+        ),
+        axis=1,
+    )
+
+    floor_number = pd.to_numeric(e["Floor Number"], errors="coerce")
+    chargeable_weight = pd.to_numeric(e["Chargeable Weight"], errors="coerce")
+
+    e["Floor Handling Amount"] = [
+        1 if status == "Delivery" and floor >= 2 and weight >= 100
+        else 0.1 if status == "Delivery" and floor >= 2 and weight >= 30
+        else ""
+        for status, floor, weight in zip(e["Status(In Trip)"], floor_number, chargeable_weight)
+    ]
     e["Freight As per Slab"] = ""
     e["Max. Freight Charges"] = ""
     e["Promo Incentive"] = ""
-    e["Total CN Cost"] = ""
+
+    max_freight = pd.to_numeric(e["Max. Freight Charges"], errors="coerce").fillna(0)
+    promo = pd.to_numeric(e["Promo Incentive"], errors="coerce").fillna(0)
+    e["Total CN Cost"] = max_freight + promo
+
     e["Dup Check"] = ""
     e["Customer Reference No."] = s(df, "Customer Reference Number")
 
@@ -198,7 +265,6 @@ def generate_e_base():
     e["Movement Classification"] = ""
     e["HD/GG"] = ""
     e["Serv. DC code"] = ""
-    e["Serv. DC Name"] = ""
     e["Duplicate"] = ""
     e["Other Rate"] = ""
     e["Remark"] = ""
@@ -253,7 +319,7 @@ def generate_e_base():
         "Movement Classification",
         "HD/GG",
         "Serv. DC code",
-        "Serv. DC Name",
+        "Serving DC Name",
         "Duplicate",
         "Other Rate",
         "Remark",
