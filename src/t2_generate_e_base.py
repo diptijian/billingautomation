@@ -39,7 +39,12 @@ def generate_e_base():
     d = read_excel_file(get_excel_file(D_DIR))
     f = read_excel_file(get_excel_file(F_DIR))
     g = read_excel_file(get_excel_file(G_DIR))
-    h = read_excel_file(get_excel_file(H_DIR))
+    h = pd.read_excel(
+        get_excel_file(H_DIR),
+        sheet_name="New Rates",
+        engine="pyxlsb",
+        header=3
+    )
     hub_master = read_excel_file(get_excel_file(HUB_MASTER_DIR))
 
     c["Activity Type"] = "Delivery"
@@ -182,7 +187,7 @@ def generate_e_base():
     h_lookup = h.copy()
 
     h_lookup["concnate"] = (
-        h_lookup["concnate"].fillna("").astype(str).str.strip()
+        h_lookup["Key"].fillna("").astype(str).str.strip()
     )
 
     e["concnate"] = e["concnate"].fillna("").astype(str).str.strip()
