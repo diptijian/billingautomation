@@ -628,18 +628,71 @@ def generate_e_base():
         errors="ignore",
     )
 
-    e["Additional Freight Rs. 1 / KG on Pickup (RVP only)"] = e.apply(
-        lambda r: (
-            max(r["Chargeable Weight (Payable)"] - 4, 0)
-            if r["Status(In Trip)"] == "Pickup" and r["Movement Type"] == "RVP" and r["Hub Billing type"] == "HIH"
-            else (
-                r["Chargeable Weight (Payable)"]
-                if r["Status(In Trip)"] == "Pickup" and r["Movement Type"] == "RVP" and r["Hub Billing type"] == "E2E"
-                else ""
-            )
-        ),
-        axis=1,
+    # -----------------------------
+    # Additional Freight Rs. 1 / KG on Pickup (RVP only)
+    # Old formula:
+    # =IF(AND(E2="PICKUP",D2="RVP",L2="HIH"),(AG2-4),
+    #   IF(AND(E2="PICKUP",D2="RVP",L2="E2E"),AG2,0))
+    #
+    # Mapping:
+    # E2  = Activity Type          → Status(In Trip)
+    # D2  = Movement Type          → Movement Type
+    # L2  = Hub Billing type       → Hub Billing type
+    # AG2 = Chargeable Weight Payable → Chargeable Weight (Payable)
+    # -----------------------------
+
+    status_in_trip = (
+        e["Status(In Trip)"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
     )
+
+    movement_type_for_additional = (
+        e["Movement Type"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    hub_billing_type_for_additional = (
+        e["Hub Billing type"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    chargeable_weight_payable_for_additional = pd.to_numeric(
+        e["Chargeable Weight (Payable)"],
+        errors="coerce",
+    ).fillna(0)
+
+    is_pickup_rvp_hih = (
+        status_in_trip.eq("PICKUP")
+        & movement_type_for_additional.eq("RVP")
+        & hub_billing_type_for_additional.eq("HIH")
+    )
+
+    is_pickup_rvp_e2e = (
+        status_in_trip.eq("PICKUP")
+        & movement_type_for_additional.eq("RVP")
+        & hub_billing_type_for_additional.eq("E2E")
+    )
+
+    e["Additional Freight Rs. 1 / KG on Pickup (RVP only)"] = 0.0
+
+    e.loc[
+        is_pickup_rvp_hih,
+        "Additional Freight Rs. 1 / KG on Pickup (RVP only)",
+    ] = chargeable_weight_payable_for_additional - 4
+
+    e.loc[
+        is_pickup_rvp_e2e,
+        "Additional Freight Rs. 1 / KG on Pickup (RVP only)",
+    ] = chargeable_weight_payable_for_additional
 
     floor_number = pd.to_numeric(e["Floor Number"], errors="coerce")
     chargeable_weight = pd.to_numeric(e["Chargeable Weight"], errors="coerce")
@@ -650,12 +703,129 @@ def generate_e_base():
         else ""
         for status, floor, weight in zip(e["Status(In Trip)"], floor_number, chargeable_weight)
     ]
-    e["Freight As per Slab"] = ""
-    e["Max. Freight Charges"] = ""
+    movement_type = (
+        e["Movement Type"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    hub_billing_type = (
+        e["Hub Billing type"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    chargeable_weight_payable = pd.to_numeric(
+        e["Chargeable Weight (Payable)"],
+        errors="coerce",
+    ).fillna(0)
+
+    min_freight = pd.to_numeric(
+        e["Min. Freight (Upto 4 KGs)"],
+        errors="coerce",
+    ).fillna(0)
+
+    freight_per_kg = pd.to_numeric(
+        e["Freight / KG (Above 4 KGs)"],
+        errors="coerce",
+    ).fillna(0)
+
+    additional_freight = pd.to_numeric(
+        e["Additional Freight Rs. 1 / KG on Pickup (RVP only)"],
+        errors="coerce",
+    ).fillna(0)
+
+    floor_handling = pd.to_numeric(
+        e["Floor Handling Amount"],
+        errors="coerce",
+    ).fillna(0)
+
+    is_not_rto = movement_type.ne("RTO")
+    is_hih = hub_billing_type.eq("HIH")
+    is_e2e = hub_billing_type.eq("E2E")
+
+    e["Freight As per Slab"] = 0.0
+
+    e.loc[is_not_rto & is_hih, "Freight As per Slab"] = (
+        min_freight
+        + ((chargeable_weight_payable - 4).clip(lower=0) * freight_per_kg)
+        + additional_freight
+        + floor_handling
+    )
+
+    e.loc[is_not_rto & is_e2e, "Freight As per Slab"] = (
+        chargeable_weight_payable * freight_per_kg
+        + additional_freight
+        + floor_handling
+    )
+
+    # -----------------------------
+    # Max. Freight Charges
+    # Old formula:
+    # =IF(M2="E2E",AN2,
+    #   IF(AND($AA2<=10,AN2>4000),4000,
+    #   IF(AND($AA2>10,$AA2<=20,AN2>7000),7000,
+    #   IF(AND($AA2>20,$AA2<=30,AN2>9000),9000,
+    #   IF(AND($AA2>30,AN2>13000),13000,AN2)))))
+    #
+    # Mapping:
+    # M2  = Hub Billing type
+    # AN2 = Freight As per Slab
+    # AA2 = Total HUs = Number Of Pieces
+    # -----------------------------
+
+    freight_as_per_slab = pd.to_numeric(
+        e["Freight As per Slab"],
+        errors="coerce",
+    ).fillna(0)
+
+    total_hus = pd.to_numeric(
+        e["Number Of Pieces"],
+        errors="coerce",
+    ).fillna(0)
+
+    e["Max. Freight Charges"] = freight_as_per_slab.astype(float)
+
+    # E2E remains unchanged as Freight As per Slab
+    e.loc[is_e2e, "Max. Freight Charges"] = freight_as_per_slab
+
+    # HIH / non-E2E capped slabs
+    e.loc[
+        (~is_e2e) & (total_hus <= 10) & (freight_as_per_slab > 4000),
+        "Max. Freight Charges",
+    ] = 4000
+
+    e.loc[
+        (~is_e2e) & (total_hus > 10) & (total_hus <= 20) & (freight_as_per_slab > 7000),
+        "Max. Freight Charges",
+    ] = 7000
+
+    e.loc[
+        (~is_e2e) & (total_hus > 20) & (total_hus <= 30) & (freight_as_per_slab > 9000),
+        "Max. Freight Charges",
+    ] = 9000
+
+    e.loc[
+        (~is_e2e) & (total_hus > 30) & (freight_as_per_slab > 13000),
+        "Max. Freight Charges",
+    ] = 13000
+
     e["Promo Incentive"] = ""
 
-    max_freight = pd.to_numeric(e["Max. Freight Charges"], errors="coerce").fillna(0)
-    promo = pd.to_numeric(e["Promo Incentive"], errors="coerce").fillna(0)
+    max_freight = pd.to_numeric(
+        e["Max. Freight Charges"],
+        errors="coerce",
+    ).fillna(0)
+
+    promo = pd.to_numeric(
+        e["Promo Incentive"],
+        errors="coerce",
+    ).fillna(0)
+
     e["Total CN Cost"] = max_freight + promo
 
     e["Dup Check"] = ""
