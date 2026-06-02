@@ -30,13 +30,102 @@ def s(df, col, default=""):
     return df[col] if col in df.columns else default
 
 
+def clean_series(series):
+    return (
+        series.astype("string")
+        .fillna("")
+        .str.replace("\xa0", " ", regex=False)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+
+
 def make_key(a, b):
-    return a.astype(str).str.strip() + "_" + b.astype(str).str.strip()
+    return clean_series(a) + "_" + clean_series(b)
+
+
+def normalize_cd_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # Clean column headers
+    df.columns = (
+        df.columns.astype(str)
+        .str.replace("\xa0", " ", regex=False)
+        .str.strip()
+    )
+
+    # Canonical column name used by our existing T2 code:
+    # possible names in old/new C' and D' files
+    aliases = {
+        "CN #": ["CN #", "Consignment Number", "Reference Number"],
+        "Movement Type": ["Movement Type"],
+        "Status(In Trip)": ["Status(In Trip)", "Status"],
+        "Created At": ["Created At", "Created at"],
+        "Origin Hub": ["Origin Hub", "Origin Hub Code"],
+        "(Destination Hub)": ["(Destination Hub)", "Destination Hub", "Destination Hub Code"],
+        "Sender Pincode": ["Sender Pincode", "Origin Pincode"],
+        "Destination Pincode": ["Destination Pincode", "Consignee Pincode"],
+        "Completed Time": ["Completed Time", "Last Pickup Completed Time"],
+        "First Inscan at Hub Time": ["First Inscan at Hub Time", "First Inscan At Hub"],
+        "Delivered Time": ["Delivered Time"],
+        "Pickup Attempts": ["Pickup Attempts", "Pickup Attempt Count"],
+        "Delivery Attempts": ["Delivery Attempts", "Attempt Count"],
+        "Input Weight": ["Input Weight"],
+        "Number Of Pieces": ["Number Of Pieces", "Num Pieces"],
+        "Verified Chargeable Weight": ["Verified Chargeable Weight", "Chargeable Weight"],
+        "Customer Reference Number": ["Customer Reference Number", "Customer Reference No."],
+        "Movement Classification": ["Movement Classification"],
+    }
+
+    for canonical_name, possible_names in aliases.items():
+        if canonical_name not in df.columns:
+            for possible_name in possible_names:
+                if possible_name in df.columns:
+                    df[canonical_name] = df[possible_name]
+                    break
+    if "Movement Classification" not in df.columns:
+        df["Movement Classification"] = ""
+
+    required_columns = [
+        "CN #",
+        "Movement Type",
+        "Created At",
+        "Origin Hub",
+        "(Destination Hub)",
+        "Sender Pincode",
+        "Destination Pincode",
+        "Completed Time",
+        "First Inscan at Hub Time",
+        "Delivered Time",
+        "Pickup Attempts",
+        "Delivery Attempts",
+        "Input Weight",
+        "Number Of Pieces",
+        "Verified Chargeable Weight",
+        "Customer Reference Number",
+    ]
+
+    missing = [col for col in required_columns if col not in df.columns]
+
+    if missing:
+        raise ValueError(
+            "C'/D' input file is missing required columns after normalization: "
+            + ", ".join(missing)
+            + "\nAvailable columns are: "
+            + ", ".join(df.columns.astype(str))
+        )
+
+    return df
 
 
 def generate_e_base():
     c = read_excel_file(get_excel_file(C_DIR))
     d = read_excel_file(get_excel_file(D_DIR))
+
+    # Adapt old/new C' and D' formats into one internal format
+    c = normalize_cd_columns(c)
+    d = normalize_cd_columns(d)
+
     f = read_excel_file(get_excel_file(F_DIR))
     g = read_excel_file(get_excel_file(G_DIR))
     h = pd.read_excel(
@@ -58,6 +147,7 @@ def generate_e_base():
     e["S.NO"] = range(1, len(df) + 1)
     e["Consignment Number"] = s(df, "CN #")
     e["Movement Type"] = s(df, "Movement Type")
+    e["Movement Classification"] = s(df, "Movement Classification")
     e["Status(In Trip)"] = df["Activity Type"]
     e["Created At"] = s(df, "Created At")
     e["Origin Hub"] = s(df, "Origin Hub")
@@ -141,13 +231,15 @@ def generate_e_base():
 
     e.rename(columns={"Final Distance slab": "Dist Slab"}, inplace=True)
 
-    # Prepare G lookup: Hub Code -> Hub Billing Zone
-    g_lookup = g[["Hub Code", "Hub Billing Zone"]].copy()
-    g_lookup["Hub Code"] = g_lookup["Hub Code"].astype(str).str.strip()
+    # Prepare G lookup: Hub Code -> Billing Zone + HIH Partner Entity
+    g_lookup = g[["Hub Code", "Hub Billing Zone", "HIH Partner Entity"]].copy()
 
-    e["Billing Hub Code"] = e["Billing Hub Code"].astype(str).str.strip()
+    g_lookup["Hub Code"] = g_lookup["Hub Code"].fillna("").astype(str).str.strip()
+    g_lookup["Hub Billing Zone"] = g_lookup["Hub Billing Zone"].fillna("").astype(str).str.strip()
+    g_lookup["HIH Partner Entity"] = g_lookup["HIH Partner Entity"].fillna("").astype(str).str.strip()
 
-    # Merge G lookup for Billing Zone
+    e["Billing Hub Code"] = e["Billing Hub Code"].fillna("").astype(str).str.strip()
+
     e = e.merge(
         g_lookup,
         left_on="Billing Hub Code",
@@ -156,7 +248,6 @@ def generate_e_base():
     )
 
     e.rename(columns={"Hub Billing Zone": "Billing Zone"}, inplace=True)
-
     e.drop(columns=["Hub Code"], inplace=True, errors="ignore")
 
     # Ensure Partner Name exists after F merge
@@ -176,56 +267,144 @@ def generate_e_base():
     e["Chargeable Weight (Payable)"] = weights.max(axis=1).fillna(0).clip(lower=4)
 
     e["Floor Number"] = ""
+
+    def clean_key_part(x):
+        if pd.isna(x):
+            return ""
+        return " ".join(str(x).replace("\xa0", " ").strip().split()).upper()
+
+    # Prefer HIH Partner Entity from G for rate lookup.
+    # F Partner Name may not match the H rate-card partner naming.
+    rate_partner = e["HIH Partner Entity"].where(
+        e["HIH Partner Entity"].fillna("").astype(str).str.strip() != "",
+        e["Partner Name"]
+    )
+
+    # Build E-side rate lookup components
+    e["_rate_partner"] = rate_partner.apply(clean_key_part)
+    e["_rate_zone"] = e["Billing Zone"].apply(clean_key_part)
+    e["_rate_slab"] = e["Dist Slab"].apply(clean_key_part)
+
+    # Keep visible output/debug key
     e["concnate"] = (
-        e["Billing Zone"].fillna("").astype(str)
+        e["_rate_partner"]
         + "_"
-        + e["Dist Slab"].fillna("").astype(str)
+        + e["_rate_zone"]
         + "_"
-        + e["Partner Name"].fillna("").astype(str)
+        + e["_rate_slab"]
     )
 
-    h_lookup = h.copy()
+    # Clean H headers
+    h.columns = h.columns.astype(str).str.strip()
 
-    h_lookup["concnate"] = (
-        h_lookup["Key"].fillna("").astype(str).str.strip()
+    # Build H-side rate lookup from actual formula columns, NOT H["Key"]
+    h_lookup = h[
+        [
+            "Partner",
+            "Hub Definition REV",
+            "Last Mile Distance Slab Rev",
+            "Rate upto 4kgs_RFQ",
+            ">4 kgs - Per kg rate_RFQ",
+        ]
+    ].copy()
+
+    h_lookup["_rate_partner"] = h_lookup["Partner"].apply(clean_key_part)
+    h_lookup["_rate_zone"] = h_lookup["Hub Definition REV"].apply(clean_key_part)
+    h_lookup["_rate_slab"] = h_lookup["Last Mile Distance Slab Rev"].apply(clean_key_part)
+
+    h_lookup = h_lookup[
+        (h_lookup["_rate_partner"] != "")
+        & (h_lookup["_rate_zone"] != "")
+        & (h_lookup["_rate_slab"] != "")
+    ]
+
+    h_lookup = h_lookup.drop_duplicates(
+        subset=["_rate_partner", "_rate_zone", "_rate_slab"]
     )
-
-    e["concnate"] = e["concnate"].fillna("").astype(str).str.strip()
 
     e = e.merge(
         h_lookup[
             [
-                "concnate",
+                "_rate_partner",
+                "_rate_zone",
+                "_rate_slab",
                 "Rate upto 4kgs_RFQ",
                 ">4 kgs - Per kg rate_RFQ",
             ]
         ],
-        on="concnate",
+        on=["_rate_partner", "_rate_zone", "_rate_slab"],
         how="left",
     )
 
-    e["Min. Freight (Upto 4 KGs)"] = e.apply(
-        lambda r: r["Rate upto 4kgs_RFQ"]
-        if r["Hub Billing type"] == "HIH"
-        else "",
-        axis=1,
+    is_hih = (
+        e["Hub Billing type"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .eq("HIH")
     )
 
-    e["Freight / KG (Above 4 KGs)"] = e.apply(
-        lambda r: r[">4 kgs - Per kg rate_RFQ"]
-        if r["Hub Billing type"] == "HIH"
-        else "",
-        axis=1,
-    )
+    e["Min. Freight (Upto 4 KGs)"] = pd.NA
+    e["Freight / KG (Above 4 KGs)"] = pd.NA
+
+    e.loc[is_hih, "Min. Freight (Upto 4 KGs)"] = e.loc[
+        is_hih, "Rate upto 4kgs_RFQ"
+    ]
+
+    e.loc[is_hih, "Freight / KG (Above 4 KGs)"] = e.loc[
+        is_hih, ">4 kgs - Per kg rate_RFQ"
+    ]
+
+    # Debug file to check why rates are blank
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    debug_unmatched = e.loc[
+        is_hih & e["Rate upto 4kgs_RFQ"].isna(),
+        [
+            "Billing Hub Code",
+            "Billing Zone",
+            "Dist Slab",
+            "Partner Name",
+            "HIH Partner Entity",
+            "_rate_partner",
+            "_rate_zone",
+            "_rate_slab",
+            "HUB Classification",
+            "Hub Billing type",
+            "concnate",
+        ],
+    ].head(1000)
+
+    debug_h_keys = h_lookup[
+        [
+            "Partner",
+            "Hub Definition REV",
+            "Last Mile Distance Slab Rev",
+            "_rate_partner",
+            "_rate_zone",
+            "_rate_slab",
+            "Rate upto 4kgs_RFQ",
+            ">4 kgs - Per kg rate_RFQ",
+        ]
+    ].head(1000)
+
+    with pd.ExcelWriter(OUTPUT_DIR / "debug_h_lookup.xlsx") as writer:
+        debug_unmatched.to_excel(writer, sheet_name="Unmatched HIH E Keys", index=False)
+        debug_h_keys.to_excel(writer, sheet_name="Sample H Keys", index=False)
 
     e.drop(
         columns=[
             "Rate upto 4kgs_RFQ",
             ">4 kgs - Per kg rate_RFQ",
+            "_rate_partner",
+            "_rate_zone",
+            "_rate_slab",
         ],
         inplace=True,
         errors="ignore",
     )
+
     e["Additional Freight Rs. 1 / KG on Pickup (RVP only)"] = e.apply(
         lambda r: (
             max(r["Chargeable Weight (Payable)"] - 4, 0)
@@ -267,7 +446,6 @@ def generate_e_base():
         lambda x: "Online" if x.startswith(prefixes) else "Offline"
     )
 
-    e["Movement Classification"] = ""
     e["HD/GG"] = ""
     e["Serv. DC code"] = ""
     e["Duplicate"] = ""
