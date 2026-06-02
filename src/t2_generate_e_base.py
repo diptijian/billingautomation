@@ -388,11 +388,55 @@ def generate_e_base():
         return " ".join(str(x).replace("\xa0", " ").strip().split()).upper()
     
     def clean_slab(x):
-        value = clean_key_part(x)
+        if pd.isna(x):
+            return ""
+
+        value = str(x).replace("\xa0", " ").upper().strip()
+        value = value.replace("–", "-").replace("—", "-")
+        value = re.sub(r"\s+", " ", value)
+
+        # Normalize common range words/symbols
         value = value.replace(" TO ", "-")
         value = value.replace(" - ", "-")
         value = value.replace(" -", "-")
         value = value.replace("- ", "-")
+
+        # Remove KG/KGS if present
+        value = value.replace("KGS", "").replace("KG", "").strip()
+
+        # Direct expected mappings
+        if value in {"0-30", "0 TO 30"}:
+            return "0-30"
+
+        if value in {"31-50", "31 TO 50"}:
+            return "31-50"
+
+        if value in {"51-75", "51 TO 75"}:
+            return "51-75"
+
+        if value in {"76-100", "76 TO 100", ">75", "ABOVE 75", "75+", "76+"}:
+            return ">75"
+
+        # Generic numeric range parsing
+        match = re.search(r"(\d+)\s*-?\s*(?:TO)?\s*-?\s*(\d+)", value)
+        if match:
+            start = int(match.group(1))
+            end = int(match.group(2))
+
+            if start == 0 and end == 30:
+                return "0-30"
+            if start == 31 and end == 50:
+                return "31-50"
+            if start == 51 and end == 75:
+                return "51-75"
+            if start >= 76:
+                return ">75"
+
+        # Greater than formats
+        match = re.search(r">\s*(\d+)", value)
+        if match and int(match.group(1)) >= 75:
+            return ">75"
+
         return value
 
     # -----------------------------
@@ -405,17 +449,20 @@ def generate_e_base():
 
     h.columns = h.columns.astype(str).str.strip()
 
-    e["_rate_partner"] = e["Partner Name"].apply(normalize_partner_name)
+    e["_rate_partner"] = e["HIH Partner Entity"].apply(normalize_partner_name)
     e["_rate_slab"] = e["Dist Slab"].apply(clean_slab)
     e["_rate_zone"] = e["Billing Zone"].apply(clean_key_part)
 
     # Keep visible/debug key in E_Base
+    def clean_display_text(x):
+        if pd.isna(x):
+            return ""
+        return " ".join(str(x).replace("\xa0", " ").strip().split())
+
     e["concnate"] = (
-        e["_rate_partner"]
-        + "_"
-        + e["_rate_slab"]
-        + "_"
-        + e["_rate_zone"]
+        e["Billing Zone"].apply(clean_display_text)
+        + e["Dist Slab"].apply(clean_slab)
+        + e["HIH Partner Entity"].apply(clean_display_text)
     )
 
     h_lookup = h[
