@@ -4,6 +4,7 @@ import streamlit as st
 
 from t1_generate_cd import generate_cd
 from t2_generate_e_base import generate_e_base
+from t3_generate_x import generate_x
 
 
 INPUT_DIR = Path("input")
@@ -103,3 +104,33 @@ if st.button("Run T2"):
         st.success("T2 complete.")
 
 download_button("Download E_Base", "output/t2/E_Base.xlsx")
+
+st.header("T3: Generate X")
+
+e_base_file = st.file_uploader(
+    "Upload E_Base File",
+    type=["xlsx", "xlsb", "xls"],
+    key="t3_e_base",
+)
+
+x_base_file = st.file_uploader(
+    "Upload X_Base / E2E Rate Card File",
+    type=["xlsx", "xlsb", "xls"],
+    key="t3_x_base",
+)
+
+if st.button("Run T3"):
+    if not e_base_file or not x_base_file:
+        st.error("Upload both E_Base and X_Base files.")
+    else:
+        clear_folder(Path("input/t3/e_base"))
+        clear_folder(Path("input/t3/x_base"))
+        Path("output/t3").mkdir(parents=True, exist_ok=True)
+
+        save_uploaded_file(e_base_file, Path("input/t3/e_base"))
+        save_uploaded_file(x_base_file, Path("input/t3/x_base"))
+
+        generate_x()
+        st.success("T3 complete.")
+
+download_button("Download X", "output/t3/X.xlsx")
