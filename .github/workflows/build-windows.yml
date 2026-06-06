@@ -22,7 +22,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onedir --windowed --name "Billing Automation" --collect-all streamlit --add-data "src/app.py;." src\launcher.py
+          pyinstaller --onedir --windowed --name "Billing Automation" --collect-all streamlit --add-data "src/app.py;." --add-data "src/t1_generate_cd.py;." --add-data "src/t2_generate_e_base.py;." --add-data "src/t3_generate_x.py;." src\launcher.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4

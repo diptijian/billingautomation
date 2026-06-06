@@ -14,6 +14,7 @@ import pyxlsb  # noqa: F401
 import xlsxwriter  # noqa: F401
 import t1_generate_cd  # noqa: F401
 import t2_generate_e_base  # noqa: F401
+import t3_generate_x  # noqa: F401
 
 
 def resource_path(relative_path: str) -> Path:
