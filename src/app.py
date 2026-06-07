@@ -105,7 +105,7 @@ if st.button("Run T2"):
 
 download_button("Download E_Base", "output/t2/E_Base.xlsx")
 
-st.header("T3: Generate X")
+st.header("T3: Generate X and Final E")
 
 e_base_file = st.file_uploader(
     "Upload E_Base File",
