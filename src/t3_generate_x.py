@@ -294,13 +294,99 @@ def generate_x():
         x.loc[idx, "Total Cost"] = total_cost
         x.loc[idx, "Average CPK"] = average_cpk
 
-    x.drop(
+    # -----------------------------
+    # Step 4:
+    # Use X Average CPK to fill E2E rows in E_Base
+    #
+    # Matching:
+    # E_Base Serving DC Name = X Serving DC Code
+    #
+    # Output: E.xlsx
+    # -----------------------------
+
+    x_avg_cpk_map = {}
+
+    for _, row in x.iterrows():
+        x_serving_dc_code = str(row.get("Serving DC Code", "")).replace("\xa0", " ").strip()
+        x_average_cpk = pd.to_numeric(row.get("Average CPK", pd.NA), errors="coerce")
+
+        if x_serving_dc_code and pd.notna(x_average_cpk):
+            x_avg_cpk_map[x_serving_dc_code.upper()] = x_average_cpk
+
+    e_output = e.copy()
+
+    required_e_output_cols = [
+        "Freight / KG (Above 4 KGs)",
+        "Freight As per Slab",
+        "Max. Freight Charges",
+        "Promo Incentive",
+        "Total CN Cost",
+    ]
+
+    for col in required_e_output_cols:
+        if col not in e_output.columns:
+            e_output[col] = pd.NA
+
+    # E_Base Serving DC Name key
+    e_output["_serving_dc_name_key"] = normalize_key(e_output[e_serving_dc_col])
+
+    # E_Base Hub Billing type key
+    e_output["_hub_billing_type_key"] = normalize_key(e_output[e_hub_billing_type_col])
+
+    is_e2e_row = e_output["_hub_billing_type_key"].eq("E2E")
+
+    # Match E_Base Serving DC Name with X Serving DC Code
+    e_output["_avg_cpk_from_x"] = e_output["_serving_dc_name_key"].map(x_avg_cpk_map)
+
+    chargeable_weight_payable = pd.to_numeric(
+        e_output[e_weight_col],
+        errors="coerce",
+    ).fillna(0)
+
+    avg_cpk_from_x = pd.to_numeric(
+        e_output["_avg_cpk_from_x"],
+        errors="coerce",
+    )
+
+    e_output.loc[
+        is_e2e_row,
+        "Freight / KG (Above 4 KGs)",
+    ] = avg_cpk_from_x
+
+    e_output.loc[
+        is_e2e_row,
+        "Freight As per Slab",
+    ] = chargeable_weight_payable * avg_cpk_from_x
+
+    e_output.loc[
+        is_e2e_row,
+        "Max. Freight Charges",
+    ] = chargeable_weight_payable * avg_cpk_from_x
+
+    promo_incentive = pd.to_numeric(
+        e_output["Promo Incentive"],
+        errors="coerce",
+    ).fillna(0)
+
+    max_freight_charges = pd.to_numeric(
+        e_output["Max. Freight Charges"],
+        errors="coerce",
+    ).fillna(0)
+
+    e_output.loc[
+        is_e2e_row,
+        "Total CN Cost",
+    ] = max_freight_charges + promo_incentive
+
+    e_output.drop(
         columns=[
-            "_dc_display",
-            "_dc_key",
-            "_lower",
-            "_upper",
-            "_cpk",
+            "_serving_dc_display",
+            "_serving_dc_key",
+            "_hub_billing_type",
+            "_weight",
+            "_serving_dc_name_key",
+            "_hub_billing_type_key",
+            "_avg_cpk_from_x",
         ],
         inplace=True,
         errors="ignore",
@@ -308,15 +394,20 @@ def generate_x():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    output_file = OUTPUT_DIR / "X.xlsx"
-    x.to_excel(output_file, index=False)
+    x_output_file = OUTPUT_DIR / "X.xlsx"
+    e_output_file = OUTPUT_DIR / "E.xlsx"
 
-    print("T3 complete: X generated")
+    x.to_excel(x_output_file, index=False)
+    e_output.to_excel(e_output_file, index=False)
+
+    print("T3 complete: X and E generated")
     print(f"E_Base file: {e_base_path}")
     print(f"X_Base file: {x_base_path}")
     print(f"Rows in X: {len(x)}")
+    print(f"Rows in E: {len(e_output)}")
     print(f"Serving DCs calculated: {len(ordered_dc_keys)}")
-    print(f"Output: {output_file}")
+    print(f"X Output: {x_output_file}")
+    print(f"E Output: {e_output_file}")
 
 
 if __name__ == "__main__":

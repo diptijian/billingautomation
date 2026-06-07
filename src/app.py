@@ -134,3 +134,4 @@ if st.button("Run T3"):
         st.success("T3 complete.")
 
 download_button("Download X", "output/t3/X.xlsx")
+download_button("Download E", "output/t3/E.xlsx")
